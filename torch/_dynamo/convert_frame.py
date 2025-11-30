@@ -1581,6 +1581,9 @@ def _compile(
             recompile_reason = (
                 "Unable to find recompilation reasons" if not reasons else reasons[0]
             )
+            counters["recompile"]["total"] += 1
+            if recompile_reason:
+                counters["recompile"][recompile_reason] += 1
         # Recheck for recompilation, for when inline_inbuilt_nn_modules is set to False
         inline_inbuilt_nn_modules_candidate = False
         if not config.inline_inbuilt_nn_modules and frame:

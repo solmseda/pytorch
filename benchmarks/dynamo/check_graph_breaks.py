@@ -6,6 +6,9 @@ import textwrap
 import pandas as pd
 
 
+METRICS = ("graph_breaks", "recompiles")
+
+
 # Hack to have something similar to DISABLED_TEST. These models are flaky.
 
 flaky_models = {
@@ -18,14 +21,59 @@ flaky_models = {
 
 def get_field(csv, model_name: str, field: str):
     try:
-        return csv.loc[csv["name"] == model_name][field].item()
+        value = csv.loc[csv["name"] == model_name][field].item()
+        if isinstance(value, float) and pd.isna(value):
+            return None
+        return value
     except Exception:
         return None
 
 
 def check_graph_breaks(actual_csv, expected_csv, expected_filename):
-    failed = []
-    improved = []
+    results = {
+        metric: {"failed": [], "improved": []} for metric in METRICS
+    }
+
+    def evaluate_metric(
+        model: str,
+        metric: str,
+        actual,
+        expected,
+        flaky: bool,
+    ) -> tuple[str, bool, str | None]:
+        if actual is None:
+            return "SKIP", False, None
+
+        if expected is None:
+            results[metric]["improved"].append(model)
+            status = "MISSING:"
+            msg = f"{model:34}  {status:19} {metric}={actual}, expected=None"
+            return status, True, msg
+
+        if actual == expected:
+            status = "PASS_BUT_FLAKY" if flaky else "PASS"
+            if flaky:
+                msg = f"{model:34}  {status:19} {metric}={actual}, expected={expected}"
+                return status, True, msg
+            return status, False, None
+
+        if actual > expected:
+            if flaky:
+                status = "FAIL_BUT_FLAKY:"
+            else:
+                status = "FAIL:"
+                results[metric]["failed"].append(model)
+            msg = f"{model:34}  {status:19} {metric}={actual}, expected={expected}"
+            return status, True, msg
+
+        # actual < expected
+        if flaky:
+            status = "IMPROVED_BUT_FLAKY:"
+        else:
+            status = "IMPROVED:"
+            results[metric]["improved"].append(model)
+        msg = f"{model:34}  {status:19} {metric}={actual}, expected={expected}"
+        return status, True, msg
 
     if "rocm" in expected_filename:
         flaky_models.update(
@@ -62,37 +110,38 @@ def check_graph_breaks(actual_csv, expected_csv, expected_filename):
     for model in actual_csv["name"]:
         graph_breaks = get_field(actual_csv, model, "graph_breaks")
         expected_graph_breaks = get_field(expected_csv, model, "graph_breaks")
+        recompiles = get_field(actual_csv, model, "recompiles")
+        expected_recompiles = get_field(expected_csv, model, "recompiles")
         flaky = model in flaky_models
 
-        if expected_graph_breaks is None:
-            status = "MISSING:"
-            improved.append(model)
-        elif graph_breaks == expected_graph_breaks:
-            status = "PASS_BUT_FLAKY" if flaky else "PASS"
-            print(f"{model:34}  {status}")
-            continue
-        elif graph_breaks > expected_graph_breaks:
-            if flaky:
-                status = "FAIL_BUT_FLAKY:"
-            else:
-                status = "FAIL:"
-                failed.append(model)
-        elif graph_breaks < expected_graph_breaks:
-            if flaky:
-                status = "IMPROVED_BUT_FLAKY:"
-            else:
-                status = "IMPROVED:"
-                improved.append(model)
-        print(
-            f"{model:34}  {status:19} graph_breaks={graph_breaks}, expected={expected_graph_breaks}"
-        )
+        outputs = []
+        for metric, actual, expected in (
+            ("graph_breaks", graph_breaks, expected_graph_breaks),
+            ("recompiles", recompiles, expected_recompiles),
+        ):
+            status, should_print, msg = evaluate_metric(
+                model, metric, actual, expected, flaky
+            )
+            if should_print and msg:
+                outputs.append(msg)
+
+        if outputs:
+            for line in outputs:
+                print(line)
 
     msg = ""
-    if failed or improved:
+    has_changes = False
+    for metric in METRICS:
+        failed = results[metric]["failed"]
+        improved = results[metric]["improved"]
+        if not failed and not improved:
+            continue
+        has_changes = True
+        title = metric.replace("_", " ")
         if failed:
             msg += textwrap.dedent(
                 f"""
-            Error: {len(failed)} models have new dynamo graph breaks:
+            Error: {len(failed)} models have new dynamo {title} regressions:
                 {" ".join(failed)}
 
             """
@@ -100,11 +149,12 @@ def check_graph_breaks(actual_csv, expected_csv, expected_filename):
         if improved:
             msg += textwrap.dedent(
                 f"""
-            Improvement: {len(improved)} models have fixed dynamo graph breaks:
+            Improvement: {len(improved)} models improved dynamo {title}:
                 {" ".join(improved)}
 
             """
             )
+    if msg:
         sha = os.getenv("SHA1", "{your CI commit sha}")
         msg += textwrap.dedent(
             f"""
@@ -114,7 +164,7 @@ def check_graph_breaks(actual_csv, expected_csv, expected_filename):
         and then `git add` the resulting local changes to expected CSVs to your commit.
         """
         )
-    return failed or improved, msg
+    return has_changes, msg
 
 
 def main():

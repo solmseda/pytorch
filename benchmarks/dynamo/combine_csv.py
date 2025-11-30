@@ -17,7 +17,7 @@ for side, f in zip(["static", "dynamic"], sys.argv[1:]):
         for row in reader:
             RESULTS[(row["bench"], row["name"])][side] = row
 
-fields = ["frame_time", "graph_breaks"]
+fields = ["frame_time", "graph_breaks", "recompiles"]
 
 out = csv.DictWriter(
     sys.stdout,

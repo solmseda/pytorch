@@ -220,6 +220,20 @@ class MiscTests(torch._inductor.test_case.TestCase):
         entries = _debug_get_cache_entry_list(torch._dynamo.graph_break)
         self.assertEqual(len(entries), 0)
 
+    def test_recompile_counter_tracks_shape_change(self):
+        torch._dynamo.reset()
+
+        def foo(x):
+            return x + 1
+
+        compiled = torch.compile(foo, backend="eager")
+        compiled(torch.randn(2))
+        compiled(torch.randn(3))
+
+        recompile_total = torch._dynamo.utils.counters["recompile"]["total"]
+        self.assertGreaterEqual(recompile_total, 1)
+        torch._dynamo.reset()
+
     def test_boolarg(self):
         def boolarg(aa, bb, flag):
             if flag:
